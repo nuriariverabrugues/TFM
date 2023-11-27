@@ -1,0 +1,405 @@
+---
+title: "DE_Cyt_vs_Nuc"
+author: "Núria Rivera Brugués"
+date: "2023-10-02"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=T)
+```
+
+```{r, include=FALSE , warning=FALSE}
+library(limma)
+library(edgeR)
+library(sva)
+library(pheatmap)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(factoextra)
+library(FactoMineR)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(enrichplot)
+library(tidyr)
+
+```
+
+
+```{r}
+counts_kidney_human<-read.delim("./GSE116008_Fractionation_counts_polyA_hek293t.txt")
+rownames(counts_kidney_human)<-counts_kidney_human[,1]
+counts_kidney_human<-counts_kidney_human[,-1]
+
+colnames(counts_kidney_human)<-c("C1","C2","N1","N2")
+
+targets_kidney_human<-read.delim("./SraRunTable_kidney.txt", header=T, sep=",")
+targets_kidney_human<-targets_kidney_human[,c(1,6,8,15,27,28,29)]
+info<-targets_kidney_human
+info$Sample<-c("N1", "N2", "C1", "C2")
+info$Fraction<-c("Nuc", "Nuc", "Cyto", "Cyto")
+info<-info[c(3,4,1,2),]
+write.csv(info, "./info_kidney.csv")
+
+```
+
+```{r}
+# redueixo el dataframe (nomes Cyt vs Nuc del neurones corticals primaries)
+info$Subgroup<-c(1,2,1,2)
+rownames(info)<-info$Sample
+barcode=factor(info$Sample)
+subgroup=factor(info$Subgroup)
+group=factor(info$Group)
+fraction<-factor(info$Fraction)
+
+View(info)
+```
+
+
+
+```{r}
+y=DGEList(counts_kidney_human)
+isexpr <- rowSums(cpm(y) > 1) >= 3
+y=y[isexpr,keep.lib.size=FALSE]
+y=calcNormFactors(y)
+y$samples
+dim(y)
+```
+
+# Exploración de los datos
+Una vez descartados los genes poco expresados y con los recuentos almacenados en un objeto DGEList, podemos`proceder a realizar algunos gráficos exploratorios para determinar si los datos aparentan buena calidad y/o si presentan algun problema.
+
+
+## Distribución de los contajes
+```{r, warning=FALSE}
+boxplot(y$counts, col = y$samples$cols, las = 2, cex.axis = 0.7,
+    main = "Contajes normalizados", ylim = c(0, 10000))
+```
+
+
+# Análisis de similaridad entre las muestras
+
+## Distancia entre muestras
+La función dist permite calcular una matriz de distancias que contiene las comparaciones dos a dos entre todas las muestras. Por defecto se utiliza una distancia euclídea.
+```{r, warning=FALSE}
+log2count_norm <- cpm(y, log = TRUE)
+sampleDists <- dist(t(log2count_norm))
+round(sampleDists, 1)
+par(mfrow = c(1, 1))
+fviz_dist(sampleDists)
+```
+
+
+## Agrupamiento jerárquico
+Un agrupamiento jerárquico proporciona una representación alternativa, también basada en la matriz de distancias.
+
+```{r, warning=FALSE}
+hc <- hclust(sampleDists)
+plot(hc, labels = colnames(log2count_norm), main = "Agrpamiento jerárquico de las muestras",
+    cex = 0.8)
+```
+
+
+
+# Análisis de Escalamiento Multidimensional (MDS)
+Reducción dimensional
+
+```{r , warning=FALSE}
+plotMDS(y, col=as.numeric(fraction), labels=barcode, cex = 1 )
+pdf(paste("plotMDS.pdf",sep=""))
+plotMDS(y, col=as.numeric(fraction), labels=barcode, cex = 1 )
+dev.off()
+
+```
+
+
+
+# PCA
+```{r}
+library(FactoMineR)
+
+pca.raw.y <- log2(y$counts+1)
+
+pca.y <- PCA(t(pca.raw.y),graph = F)
+fviz_pca_ind(pca.y, col.ind = fraction)
+
+pdf(paste("PAC.pdf",sep=""))
+fviz_pca_ind(pca.y, col.ind = fraction)
+dev.off()
+```
+
+
+
+
+# Análisis de expresión diferencial (DE)
+El objetivo del análisis de expresión diferencial es seleccionar genes cuya expresión difiere entre grupos.
+
+## Selección de genes usando limma-Voom
+La ventaja principal de esta aproximación es que permite trabajar con toda la flexibilidad de los modelos lineales para representar diseños experimentales, y, en muchos casos , aprovechar la experiencia previa del usuario en el manejo de limma.
+
+## Matriz de diseño 
+Utilizando la variable group podemos definir una matriz de diseño y, sobre ésta, los contrastes que nos interesan.
+
+
+```{r , warning=FALSE}
+mod <- model.matrix(~0+fraction)
+colnames(mod)=gsub("fraction","",colnames(mod))
+pheatmap(mod,cluster_rows = FALSE,cluster_cols = FALSE)
+
+mod
+```
+
+
+## Matriz de contrastes
+```{r , warning=FALSE}
+contr.matrix <- makeContrasts(
+  Cyto_vs_Nuc = Cyto-Nuc,
+levels=colnames(mod))
+contr.matrix
+```
+
+
+## Transformación de los contajes
+```{r , warning=FALSE}
+v=voom(y,mod, plot = T)
+v
+```
+
+## Selección de genes diferencialmente expresados
+Como en el caso de los microarrays el objeto v y las matrices de diseño y contrastes se utilizaran para ajustar un modelo y, a continuación realizar las comparaciones especificadas sobre el modelo ajustado. El proceso finaliza con la regularización del estimador del error usando la función eBayes.
+
+```{r , warning=FALSE}
+fit=lmFit(v,mod)
+fit2 <- contrasts.fit(fit, contr.matrix)
+fit2 <- eBayes(fit2)
+(results<-topTable(fit2, coef = 1, adjust="BH"))
+summary(decideTests(fit2))
+```
+
+
+```{r, warning=FALSE}
+summa.fit <- decideTests(fit2, p.value = 0.01, lfc = 3)
+summary(summa.fit)
+
+```
+
+
+# Visualización de los resultados
+
+## Volcano Plot
+```{r, warning=FALSE}
+volcanoplot(fit2, coef = 1, highlight = 10,names=rownames(fit2) ,main =paste( "Differentially expressed genes", sep="\n", "CYT vs NUC"))
+abline(v=c(-2,2))
+
+
+pdf(paste("volcanoplot.pdf",sep=""))
+volcanoplot(fit2, coef = 1, highlight = 10,names=rownames(fit2) ,main =paste( "Differentially expressed genes", sep="\n", "CYT vs NUC"))
+abline(v=c(-2,2))
+dev.off()
+```
+
+# Perfiles de expresión
+Con el fin de observar si existen perfiles de expresión diferenciados podemo realizar un mapa de colores con los genes más diferencialmente expresados.
+
+Es decir, fijamos un criterio de selección de genes y retenemos aquellos componentes de la tabla de resultados que lo cumplen. Por ejemplo: Genes con un p-valor ajustado inferior a 0.001 y un `fold-change’ superior a 6 o inferior a -6.
+
+## mapa de colores
+```{r , warning=FALSE}
+for (i in  colnames(fit2$coefficients)){
+  top=topTable(fit2,coef=i,sort="p", n=13522)
+  genes=rownames(top[which(top$adj.P.Val<0.01 & abs(top$logFC)>3),])
+  write.table(top,paste(i,"_limma_voom.txt",sep=""),quote=F)
+  term1=strsplit(i,split="_vs_")[[1]][1]
+  term2=strsplit(i,split="_vs_")[[1]][2]
+  samples=rownames(subset(info,fraction==term1 | fraction==term2))
+  expr=v$E[genes,samples]
+  rownames(expr)=do.call(rbind, strsplit(genes, ','))[,1]
+  if (length(genes) >1) {
+    pdf(paste("pheatmap_DE_genes__01_",i,".pdf",sep=""), width = 10, height = 12)
+    pheatmap(expr,scale="row",annotation_col=info[,c("Fraction","Sample")], border_color = "NA",show_rownames = T)
+    dev.off()
+  }}
+
+write.table(v$E,"logcpm.txt",quote=F)
+
+```
+
+```{r, warning=FALSE}
+for (i in  colnames(fit2$coefficients)){
+  top=topTable(fit2,coef=i,sort="p", n=13522)
+  genes=rownames(top[which(top$adj.P.Val<0.01 & abs(top$logFC)>3),])
+  write.table(top,paste(i,"_limma_voom.txt",sep=""),quote=F)
+  term1=strsplit(i,split="_vs_")[[1]][1]
+  term2=strsplit(i,split="_vs_")[[1]][2]
+  samples=rownames(subset(info,fraction==term1 | fraction==term2))
+  expr=v$E[genes,samples]
+  rownames(expr)=do.call(rbind, strsplit(genes, ','))[,1]
+  if (length(genes) >1) {
+    pheatmap(expr,scale="row",annotation_col=info[,c("Fraction","Sample")], border_color = "NA",show_rownames = T)
+  }}
+```
+
+
+
+
+
+```{r, warning=FALSE}
+length(which(top$adj.P.Val < 0.01 & abs(top$logFC) > 3))
+p_data <-   top  %>% filter(adj.P.Val <0.01 & abs(logFC) > 3)   
+
+p_data %>%  ggplot(aes(x=adj.P.Val,y=logFC)) + 
+  geom_text(label=rownames(p_data), size=2.2,alpha=0.7, aes(col=AveExpr))
+```
+
+# Top tables
+
+```{r, warning=FALSE}
+top$Gene <- rownames(top) 
+DEGs <- top %>%  arrange(logFC) %>% filter(adj.P.Val <0.01 & abs(logFC) > 3) 
+head(DEGs)
+
+write.table(DEGs, file = "./DEG.txt", row.names = F, sep = "\t", quote = F)
+```
+
+```{r , warning=FALSE}
+#genes_sin_version <- sub("\\.\\d+$", "", rownames(top))
+top$Gene <- rownames(top)
+top <- top[,c("Gene", names(top)[1:6])]
+write.table(top, file = "./Cyt_v_Nuc.txt", row.names = F, sep = "\t", quote = F)
+```
+
+
+# Análisis de significació biológica ###############################################################################################################################################################################################################################################################################################
+Nos centraremos únicamente en la lista de genes "up-regulados" y "down-regulados" es decir diferencialmente expresados con un logFC mayor que seis (más expresados en "cytosol" que en "nucleo").
+
+
+Para el análisis de enriquecimiento utilizaremos la función `enrichGO` del paquete `clusterProfiler muy parecida a las de otros paquetes como `GOstats`.
+
+
+```{r , warning=FALSE}
+library(org.Hs.eg.db)
+
+head(top)
+allEntrezs <- rownames(top)
+selectedEntrezsUP <- rownames(subset(top, (abs(logFC) > 3) & (adj.P.Val < 0.01)))
+length(allEntrezs); length(selectedEntrezsUP)
+
+library(clusterProfiler)
+library(org.Mm.eg.db)
+ego <- enrichGO(gene = selectedEntrezsUP, 
+                universe = allEntrezs,
+                keyType = "ENSEMBL",
+                OrgDb = org.Hs.eg.db, 
+                ont = "BP", 
+                pAdjustMethod = "BH", 
+                qvalueCutoff = 0.01, 
+                readable = TRUE)
+
+```
+
+
+El objeto resultante almacena las categorías GO enriquecidas, los genes anotados en ellas y los valores de los estadísticos que llevan a afirmar que dichas categorías se encuentran significativamente sobre-representadas como resultado de un test de enriquecimiento.
+```{r, warning=FALSE}
+head(ego)
+ego_results <- data.frame(ego)
+write.csv(ego_results, "clusterProfiler_ORAresults_UpGO.csv")
+```
+
+## Visualización de los resultados del análisis de enriquecimiento
+Uno de los aspectos interesantes del paquete `clusterProfiler` es que permite visualizar los resultados mediante algunos gráficos creados específicamente para tal fin.
+
+##Dotplot de los 9 términos más enriquecidos
+Este gráfico compara visualmente las categorías enriquecidas (de más a menos enriquecidas) visualizando simultáneamente cuan enriquecidas estan y el p-valor del test de enriquecimiento.
+```{r, warning=FALSE}
+dotplot(ego, showCategory=10)
+pdf(paste("dotplot.pdf",sep=""))
+dotplot(ego, showCategory=10)
+dev.off()
+```
+
+
+
+
+## Visualización jerárquica de los términos GO
+Este gráfico permite visualizar los términos seleccionados dentro del sub-grafo de la GO que los contiene. Esto nos, permite por ejemplo, hacernos una idea de si estan muy dispersos, o no, en la  jerarquía y de si se trata de términos muy generales o más específicos.
+
+```{r, warning=FALSE}
+pdf(paste("GO.pdf",sep=""))
+goplot(ego, showCategory=5, cex=0.5)
+dev.off()
+
+goplot(ego, showCategory=5, cex=0.5)
+```
+
+De forma parecida una red de genes nos permite visualizar la asociación entre los genes y las categorías seleccionadas en las que éstos genes estan anotados.
+```{r, warning=FALSE}
+## Gene network para los términos seleccionados
+pdf(paste("cneplot.pdf",sep=""))
+cnetplot(ego) 
+dev.off()
+
+cnetplot(ego) 
+```
+
+
+```{r, warning=FALSE}
+library(clusterProfiler)
+library(ggplot2)
+ego2 = clusterProfiler::simplify(ego, cutoff = 0.01, by = "p.adjust")
+png("./cnetplot_transp.png", units = "in", width = 24, height = 16, res = 600,
+    bg = "transparent")
+par(bg = NA)
+a <- cnetplot(ego2, showCategory = 5, cex_category = 1, cex_label_category = 2.5,
+    cex_gene = 1, cex_label_gene = 1, circular = FALSE, colorEdge = TRUE)
+a
+invisible(dev.off())
+a
+```
+
+
+Finalmente este gráfico permite simplificar las visualizaciones y agrupa los 104 términos más significativos basándose en alguna medida de similaridad entre los mismos (por ejemplo "similaridad semántica" definida a partir de su interdistancia dentro del grafo).
+
+```{r, warning=FALSE}
+## Enrichment Map
+library(enrichplot)
+ego_sim <- pairwise_termsim(ego)
+pdf(paste("emaplot.pdf",sep=""))
+emapplot(ego_sim, cex_label_category=0.6)
+dev.off()
+
+emapplot(ego_sim, cex_label_category=0.6)
+```
+
+
+
+```{r, warning=FALSE,fig.width=15, fig.height=12}
+term_similarity_matrix = pairwise_termsim(ego)
+emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+
+pdf(paste("emaplot_grouped.pdf",sep=""),width = 13, height = 15)
+emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+dev.off()
+
+
+```
+
+
+
+```{r, warning=FALSE}
+library(enrichplot)
+heatplot(ego)
+```
+
+
+```{r}
+probes <- rownames(topTab)[1:6]
+
+res <-AnnotationDbi::select(hgu133a.db, keys=probes, keytype = "PROBEID", columns = c("ENTREZID", "SYMBOL","ONTOLOGY"))
+
+
+res1 <- AnnotationDbi::select(hgu133a.db, keys=probes, keytype = "PROBEID",  columns = c("ENTREZID", "SYMBOL","GO"))
+```
+
