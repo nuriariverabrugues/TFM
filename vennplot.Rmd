@@ -1,0 +1,342 @@
+---
+title: "Untitled"
+author: "Núria Rivera Brugués"
+date: "2023-11-29"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+
+```{r}
+## Global options
+options(max.print="75")
+knitr::opts_chunk$set(echo=TRUE,
+	             cache=FALSE,
+               prompt=FALSE,
+               tidy=TRUE,
+               comment=NA,
+               message=FALSE,
+               warning=FALSE)
+knitr::opts_knit$set(width=75)
+```
+
+
+```{r}
+# BiocManager::install() # Actualiza paquetes instalados
+if (!require(BiocManager)) install.packages("BiocManager")
+
+installifnot <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    BiocManager::install(pkg)
+  }
+}
+installifnot("oligo")
+installifnot("limma")
+installifnot("Biobase")
+installifnot("arrayQualityMetrics")
+installifnot("genefilter")
+installifnot("annotate")
+installifnot("xtable")
+installifnot("gplots")
+installifnot("GOstats")
+installifnot("mogene10sttranscriptcluster.db")
+library("BiocManager")
+library("affy")
+library("oligo")
+library("pd.ht.hg.u133.plus.pm")
+library("hgu133plus2.db")
+library("ggplot2")
+library("hgu133plus2.db")
+library(org.Hs.eg.db)
+library("mogene10sttranscriptcluster.db")
+library(knitr)
+library(rmdformats)
+library("AnnotationDbi")
+library("org.Mm.eg.db")
+library(genekitr)
+```
+
+
+```{r}
+markers_kidney.sc<-read.csv2("/home/nrb/Escritorio/perAnna/20_sc_kidney/markers.csv")
+kidney.sc<-markers_kidney.sc$X
+# write.csv(kidney.sc, "/home/nrb/Escritorio/perAnna/Vennplot/kidney.sc.csv")
+
+markers_liver.sc<-read.csv2("/home/nrb/Escritorio/perAnna/18_hepato/markers41.csv")
+liver.sc<-markers_liver.sc$X
+# write.csv(liver.sc, "/home/nrb/Escritorio/perAnna/Vennplot/liver.sc.csv")
+
+DEG_bulk_kidney <- read.delim("/home/nrb/Documentos/R/kidney/DEG.txt")
+kidney.bulk<-DEG_bulk_kidney$Gene
+
+# write.csv(kidney.bulk, "/home/nrb/Escritorio/perAnna/Vennplot/kidney.bulk.csv")
+
+DEG_bulk_liver <- read.delim("/home/nrb/Documentos/R/liver/DEG_liver.txt")
+liver.bulk<-DEG_bulk_liver$Gene
+# write.csv(liver.bulk, "/home/nrb/Escritorio/perAnna/Vennplot/liver.bulk.csv")
+
+```
+
+```{r}
+library(biomaRt)
+human <- useEnsembl("ensembl", dataset = "hsapiens_gene_ensembl")
+
+liver.sc <- getBM(
+  attributes = c("hgnc_symbol", "ensembl_gene_id"),
+  filters = "hgnc_symbol",
+  values = liver.sc,
+  mart = human
+)
+write.csv2(liver.sc, "/home/nrb/Escritorio/perAnna/Vennplot/liver.sc2.csv")
+
+kidney.bulk <- getBM(
+  attributes = c("hgnc_symbol", "ensembl_gene_id"),
+  filters = "ensembl_gene_id",
+  values = kidney.bulk,
+  mart = human
+)
+write.csv2(kidney.bulk, "/home/nrb/Escritorio/perAnna/Vennplot/kidney.bulk2.csv")
+
+```
+
+```{r}
+kidney.sc <- mapIds(org.Mm.eg.db, keys=kidney.sc, column="ENSEMBL", keytype="SYMBOL")
+kidney.sc<-as.data.frame(kidney.sc)
+kidney.sc$symbol<-rownames(kidney.sc)
+kidney.sc$ensembl<-kidney.sc$kidney.sc
+kidney.sc<-kidney.sc[,-1]
+
+write.csv2(kidney.sc, "/home/nrb/Escritorio/perAnna/Vennplot/kidney.sc2.csv")
+
+
+liver.bulk <- mapIds(org.Mm.eg.db,keys=liver.bulk,column="SYMBOL", keytype="ENSEMBL")
+liver.bulk<-as.data.frame(liver.bulk)
+liver.bulk$ensembl<-rownames(liver.bulk)
+liver.bulk$symbol<-liver.bulk$liver.bulk
+liver.bulk<-liver.bulk[,-1]
+write.csv2(liver.bulk, "/home/nrb/Escritorio/perAnna/Vennplot/liver.bulk2.csv")
+```
+
+
+
+
+```{r}
+library(VennDetail)
+library(VennDiagram)
+library(venn)
+
+liver.bulk.mouse<-read.csv("/home/nrb/Escritorio/perAnna/Vennplot/both/liver.bulk.mouse.csv")
+liver.bulk.mouse <- subset(liver.bulk.mouse, !is.na(liver.bulk.mouse[,3]) & liver.bulk.mouse[,3] != "")
+liver.bulk.human<-liver.bulk.mouse[,3]
+
+liver.sc.human<-read.csv("/home/nrb/Escritorio/perAnna/Vennplot/both/liver.sc.human.csv")
+liver.sc.human <- subset(liver.sc.human, !is.na(liver.sc.human[,1]) & liver.sc.human[,1] != "")
+liver.sc.human<-liver.sc.human[,1]
+
+kidney.bulk.human<-read.csv("/home/nrb/Escritorio/perAnna/Vennplot/both/kidney.bulk.human.csv")
+kidney.bulk.human <- subset(kidney.bulk.human, !is.na(kidney.bulk.human[,1]) & kidney.bulk.human[,1] != "")
+kidney.bulk.human<-kidney.bulk.human[,1]
+
+kidney.sc.mouse<-read.csv("/home/nrb/Escritorio/perAnna/Vennplot/both/kidney.sc.mouse.csv")
+kidney.sc.mouse <- subset(kidney.sc.mouse, !is.na(kidney.sc.mouse[,3]) & kidney.sc.mouse[,3] != "")
+kidney.sc.human <- kidney.sc.mouse[,3]
+```
+
+# Venn Diagrams
+# humà symbol
+# Comparació fetge (bulk-sc)
+```{r}
+# liver human
+ven<-venn(list(liver.bulk = liver.bulk.human , 
+                      liver.sc = liver.sc.human))
+
+vendetail<-venndetail(list(liver.bulk =liver.bulk.human, 
+                      liver.sc = liver.sc.human))
+res<-result(vendetail)
+df.gens<-res[res$Subset=="Shared",]
+(gens_fetge_human<-as.vector(df.gens$Detail))
+```
+
+
+```{r}
+
+plotVenn(list(liver.bulk = liver.bulk.human , 
+                      liver.sc = liver.sc.human),
+         use_venn = TRUE,
+         color = ggsci::pal_lancet()(2),
+         alpha_degree = 0.5,
+         main_text_size = 4.5,
+         border_thick = 0
+)
+```
+
+# Llistat en comparar bulk-Fetge vs scsn-Fetge
+
+```{r}
+library(biomaRt)
+mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl")
+listAttributes(mart)
+
+# Query the database for annotation information
+fetge <- getBM(
+  attributes = c( "entrezgene_id", "hgnc_symbol", "ensembl_gene_id", "description"),
+  filters = "hgnc_symbol",
+  values = gens_fetge_human,
+  mart = mart
+)
+print(kable(fetge))
+```
+
+
+
+# Comparació ronyó (bulk-sc)
+```{r}
+ven<-venn(list(kidney.bulk =kidney.bulk.human , 
+                      kidney.sc = kidney.sc.human))
+
+vendetail<-venndetail(list(kidney.bulk =kidney.bulk.human , 
+                      kidney.sc = kidney.sc.human))
+res<-result(vendetail)
+df.gens<-res[res$Subset=="Shared",]
+(gens_ronyo_human<-as.vector(df.gens$Detail))
+
+
+
+```
+```{r}
+library(genekitr)
+plotVenn(list(kidney.bulk =kidney.bulk.human , 
+                      kidney.sc = kidney.sc.human),
+         use_venn = TRUE,
+         color = ggsci::pal_lancet()(2),
+         alpha_degree = 0.5,
+         main_text_size = 4.5,
+         border_thick = 0
+)
+```
+
+
+# Llistat en comparar bulk-Ronyó vs scsn-Ronyó
+```{r}
+ronyo <- getBM(
+  attributes = c( "entrezgene_id", "hgnc_symbol", "ensembl_gene_id", "description"),
+  filters = "hgnc_symbol",
+  values = gens_ronyo_human,
+  mart = mart
+)
+print(kable(ronyo))
+```
+
+
+# Comparació bulks (ronyo-fetge)
+```{r}
+ven<-venn(list(kidney.bulk =kidney.bulk.human , 
+               liver.bulk =liver.bulk.human))
+
+vendetail<-venndetail(list(kidney.bulk =kidney.bulk.human ,
+                      liver.bulk =liver.bulk.human))
+res<-result(vendetail)
+df.gens<-res[res$Subset=="Shared",]
+(gens_bulks_human<-as.vector(df.gens$Detail))
+
+```
+
+
+```{r}
+library(genekitr)
+plotVenn(list(kidney.bulk =kidney.bulk.human , 
+               liver.bulk =liver.bulk.human),
+         use_venn = TRUE,
+         color = ggsci::pal_lancet()(2),
+         alpha_degree = 0.5,
+         main_text_size = 4.5,
+         border_thick = 0
+)
+```
+# Llistat en comparar bulk-Ronyó vs bulk-Fetge
+```{r}
+bulks <- getBM(
+  attributes = c( "entrezgene_id", "hgnc_symbol", "ensembl_gene_id", "description"),
+  filters = "hgnc_symbol",
+  values = gens_bulks_human,
+  mart = mart
+)
+print(kable(bulks))
+```
+
+
+# Comparació scs (ronyo-fetge)
+```{r}
+ven<-venn(list(kidney.sc = kidney.sc.human , 
+                      liver.sc = liver.sc.human))
+vendetail<-venndetail(list(kidney.sc = kidney.sc.human , 
+                      liver.sc = liver.sc.human))
+res<-result(vendetail)
+df.gens<-res[res$Subset=="Shared",]
+(gens.sc_human<-as.vector(df.gens$Detail))
+
+```
+
+```{r}
+library(genekitr)
+plotVenn(list(kidney.sc = kidney.sc.human , 
+                      liver.sc = liver.sc.human),
+         use_venn = TRUE,
+         color = ggsci::pal_lancet()(2),
+         alpha_degree = 0.5,
+         main_text_size = 4.5,
+         border_thick = 0
+)
+```
+# Llistat en comparar scsn-Ronyó vs scsn-Fetge
+```{r}
+scs <- getBM(
+  attributes = c( "entrezgene_id", "hgnc_symbol", "ensembl_gene_id", "description"),
+  filters = "hgnc_symbol",
+  values = gens.sc_human,
+  mart = mart
+)
+print(kable(scs))
+```
+
+
+
+
+# Comparació tot
+```{r}
+ven<-venn(list(liver.bulk =liver.bulk.human , 
+                      liver.sc = liver.sc.human,
+               kidney.bulk =kidney.bulk.human , 
+                      kidney.sc = kidney.sc.human))
+```
+
+
+```{r}
+plotVenn(list(liver.bulk =liver.bulk.human , 
+                      liver.sc = liver.sc.human,
+               kidney.bulk =kidney.bulk.human , 
+                      kidney.sc = kidney.sc.human),
+         use_venn = TRUE,
+         color = ggsci::pal_lancet()(4),
+         alpha_degree = 0.4,
+         main_text_size = 3.5,
+         border_thick = 0
+)
+```
+
+```{r}
+plotVenn(list(liver.bulk =liver.bulk.human , 
+                      liver.sc = liver.sc.human,
+               kidney.bulk =kidney.bulk.human , 
+                      kidney.sc = kidney.sc.human),
+         use_venn = FALSE,
+         main_text_size = 12,
+         legend_text_size = 6,
+         legend_position = 'left'
+)
+```
+
+
+

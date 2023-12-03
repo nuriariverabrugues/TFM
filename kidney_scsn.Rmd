@@ -1,0 +1,765 @@
+---
+title: "Untitled"
+author: "Núria Rivera Brugués"
+date: "2023-11-14"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=TRUE)
+```
+
+```{r}
+library(data.table)
+library(Seurat)
+library(sp)
+library(Matrix)
+library(SeuratObject)
+library(patchwork)
+library(dplyr)
+library(tidyverse)
+library(ggplot2) # plots
+library(magrittr) # %>% operator
+library(reticulate) # required for "leiden" clustering
+library(enrichR) # functional enrichment
+library(future) # multicore support for Seurat
+library(cowplot)
+library(SingleCellExperiment)
+library(readr)
+```
+
+
+```{r eval=FALSE}
+healthy<-read.delim("/home/nrb/Escritorio/perAnna/20_sc_kidney/healthy.dge.txt")
+
+annotation<-read.delim("/home/nrb/Escritorio/perAnna/20_sc_kidney/GSE119531_Healthy.combined.cell.annotation.txt")
+
+matrix<-read.delim("/home/nrb/Escritorio/perAnna/20_sc_kidney/GSE119531_series_matrix.txt")
+```
+
+
+```{r eval=FALSE}
+# Eliminar las 11 últimas letras en cada cadena
+annotation$group <- sapply(annotation$CellBarcode, function(x) sub("_.*", "", x))
+annotation$group <- sub("\\-", ".", annotation$group)
+annotation$CellBarcode <- sub("\\-", ".", annotation$CellBarcode)
+annotation$group<-as.factor(annotation$group)
+table(annotation$group)
+
+sNuc10x<-subset(annotation, group=="sNuc.10x")
+sCellDropseq<-subset(annotation, group=="sCellDropseq")
+DroNcSeq<-subset(annotation, group=="DroNcSeq")
+sNucDropseq<-subset(annotation, group=="sNucDropseq")
+
+healthy_DroNcSeq <- healthy[ ,DroNcSeq$CellBarcode]
+write.csv2(healthy_DroNcSeq, "healthy_DroNcSeq.csv")
+healthy_sNuc10x <- healthy[ ,sNuc10x$CellBarcode]
+write.csv2(healthy_sNuc10x, "healthy_sNuc10x.csv")
+healthy_sCellDropseq <- healthy[ ,sCellDropseq$CellBarcode]
+write.csv2(healthy_sCellDropseq, "healthy_sCellDropseq.csv")
+write_tsv(healthy_sCellDropseq, "healthy_sCellDropseq.tsv")
+healthy_sNucDropseq <- healthy[ ,sNucDropseq$CellBarcode]
+write.csv2(healthy_sNucDropseq, "healthy_sNucDropseq.csv")
+write_tsv(healthy_sNucDropseq, "healthy_sNucDropseq.tsv")
+```
+
+# Utilitzo només sNucDropseq i sCellDropseq
+
+```{r eval=FALSE}
+healthy_sNucDropseq<-as(as.matrix(healthy_sNucDropseq) , "sparseMatrix") # counts
+healthy_sNucDropseq[1:10, 1:10]
+healthy_sCellDropseq<-as(as.matrix(healthy_sCellDropseq), "sparseMatrix")  # counts
+healthy_sCellDropseq[1:10, 1:10]
+
+sNucDropseq<-sNucDropseq[,-3]  # barcodes
+sNucDropseq<-as.matrix(sNucDropseq)
+sCellDropseq<-sCellDropseq[,-3]  # barcodes
+sCellDropseq<-as.matrix(sCellDropseq)
+
+features_sNucDropseq<-rownames(healthy_sNucDropseq)  # features
+features_sNucDropseq<-as.matrix(features_sNucDropseq)
+features_sCellDropseq<-rownames(healthy_sCellDropseq)  # features
+features_sCellDropseq<-as.matrix(features_sCellDropseq)
+```
+
+
+
+```{r eval=FALSE}
+seurat_Cell <- CreateSeuratObject(counts=healthy_sCellDropseq, project = "Cell", min.cells = 5, min.features = 200)
+str(seurat_Cell)
+seurat_Nuc <- CreateSeuratObject(counts=healthy_sNucDropseq, project = "Nuc", min.cells = 5, min.features = 200)
+
+sc.sn <- merge(seurat_Cell, y = seurat_Nuc, project = "sc.sn")
+head(colnames(sc.sn))
+table(sc.sn$orig.ident)
+
+# Get cell names
+sCellDropseq_names <- grep(pattern = "^sCell", x = colnames(sc.sn), value = T)
+sNucDropseq_names <- grep(pattern = "^sNuc", x = colnames(sc.sn), value = T)
+
+# Create new meta.data column
+sc.sn@meta.data$Fraction[colnames(sc.sn) %in% sNucDropseq_names] <- "Nuc"
+sc.sn@meta.data$Fraction[colnames(sc.sn) %in% sCellDropseq_names] <- "Cell"
+saveRDS(sc.sn, file = "sc.sn.rds")
+```
+
+```{r}
+sc.sn <- readRDS("sc.sn.rds")
+```
+
+## QC and selecting cells for further analysis
+```{r}
+pbmc<-sc.sn
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^mt-")
+```
+
+
+```{r}
+# Visualize QC metrics as a violin plot
+pdf(paste("QC",sep=""))
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), ncol = 3)
+dev.off()
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), ncol = 3)
+```
+
+
+```{r}
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+pdf(paste("scatter_features",sep=""))
+plot_grid(plot1 + plot2)
+dev.off()
+plot_grid(plot1 + plot2)
+```
+
+```{r}
+pbmc <- subset(pbmc, subset = nFeature_RNA > 200 & nFeature_RNA < 4000 & percent.mt < 50 )
+```
+
+# Normalizing the data
+
+```{r}
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+# Identification of highly variable features (feature selection)
+```{r}
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pbmc), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(pbmc)+ NoLegend()
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)+ NoLegend()
+pdf(paste("variable.features",sep=""))
+plot_grid(plot1 + plot2)
+dev.off()
+plot_grid(plot1 + plot2)
+```
+
+
+```{r}
+sc.sn.list <- SplitObject(sc.sn, split.by = "Fraction")
+features <- SelectIntegrationFeatures(object.list = sc.sn.list)
+sc.sn.list <- lapply(X = sc.sn.list, FUN = function(x) {
+  x <- NormalizeData(x, normalization.method = "LogNormalize", scale.factor = 10000)
+  x <- ScaleData(x, features = features, verbose = FALSE)
+  x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+kidney.anchors <- FindIntegrationAnchors(object.list = sc.sn.list, dims = 1:30)
+
+kidney.integrated <- IntegrateData(anchorset = kidney.anchors, dims = 1:30)
+```
+
+```{r}
+# switch to integrated assay. The variable features of this assay are automatically
+# set during IntegrateData
+DefaultAssay(kidney.integrated) <- "integrated"
+
+                                        # Run the standard workflow for visualization and clustering
+kidney.integrated <- ScaleData(kidney.integrated, verbose = FALSE)
+kidney.integrated <- RunPCA(kidney.integrated, npcs = 30, verbose = FALSE)
+kidney.integrated <- RunUMAP(kidney.integrated, reduction = "pca", dims = 1:30)
+kidney.integrated <- RunTSNE(kidney.integrated, dims.use = 1:10, do.fast = TRUE)
+p1 <- DimPlot(kidney.integrated, reduction = "umap", group.by = "Fraction", label = TRUE)
+p2 <- DimPlot(kidney.integrated, reduction = "tsne", group.by = "Fraction", label = TRUE) 
+pdf(paste("umap.tsne",sep=""))
+plot_grid(p1 +p2)
+dev.off()
+plot_grid(p1 +p2)
+```
+
+
+```{r}
+pdf(paste("umap",sep=""))
+DimPlot(kidney.integrated, reduction = "umap", group.by = "Fraction")
+dev.off()
+DimPlot(kidney.integrated, reduction = "umap", group.by = "Fraction")
+```
+
+
+```{r}
+pdf(paste("tsne",sep=""))
+DimPlot(kidney.integrated, reduction = "tsne", group.by = "Fraction") 
+dev.off()
+DimPlot(kidney.integrated, reduction = "tsne", group.by = "Fraction") 
+```
+
+```{r}
+pdf(paste("Vizdim",sep=""))
+VizDimLoadings(kidney.integrated, dims = 1:2, reduction = "pca")
+dev.off()
+VizDimLoadings(kidney.integrated, dims = 1:2, reduction = "pca")
+```
+
+```{r}
+pdf(paste("pca.pdf",sep=""))
+DimPlot(kidney.integrated, reduction = "pca",group.by = "Fraction")
+dev.off()
+DimPlot(kidney.integrated, reduction = "pca",group.by = "Fraction")
+```
+
+```{r}
+pdf(paste("heatmap_PCA1.pdf",sep=""))
+DimHeatmap(kidney.integrated, dims = 1, cells = 500,  balanced = TRUE)
+dev.off()
+DimHeatmap(kidney.integrated, dims = 1, cells = 500,  balanced = TRUE)
+```
+
+```{r}
+pdf(paste("heatmap_PCA2.pdf",sep=""))
+DimHeatmap(kidney.integrated, dims = 1:2, cells = 500, balanced = TRUE)
+dev.off()
+DimHeatmap(kidney.integrated, dims = 1:2, cells = 500, balanced = TRUE)
+```
+
+
+
+```{r}
+# Examine and visualize PCA results a few different ways
+print(kidney.integrated[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+
+```{r}
+# NOTE: This process can take a long time for big datasets, comment out for expediency. More
+# approximate techniques such as those implemented in ElbowPlot() can be used to reduce
+# computation time
+kidney.integrated <- JackStraw(kidney.integrated, num.replicate = 100)
+kidney.integrated <- ScoreJackStraw(kidney.integrated, dims = 1:20)
+
+pdf(paste("JackStrawPlot.pdf",sep=""))
+JackStrawPlot(kidney.integrated, dims = 1:20)
+dev.off()
+JackStrawPlot(kidney.integrated, dims = 1:20)
+```
+
+
+```{r}
+pdf(paste("elbowplot.pdf",sep=""))
+ElbowPlot(kidney.integrated)
+dev.off()
+ElbowPlot(kidney.integrated)
+```
+
+
+
+# Finding differentially expressed features (cluster biomarkers)
+
+
+```{r}
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+kidney.integrated.markers <- FindAllMarkers(kidney.integrated, only.pos = F, min.pct = 0.25, logfc.threshold = 0.25)
+?FindAllMarkers()
+kidney.integrated.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+```
+
+
+```{r}
+write.csv2(kidney.integrated.markers, "kidney.integrated.markers.csv")
+```
+
+```{r}
+clusterCell.markers <- FindMarkers(kidney.integrated, ident.1 = "sCellDropseq", logfc.threshold = 0.25, test.use = "roc", only.pos = FALSE)
+head(clusterCell.markers, n = 5)
+```
+
+```{r}
+clusterNuc.markers <- FindMarkers(kidney.integrated, ident.1 = "sNucDropseq", logfc.threshold = 0.25, test.use = "roc", only.pos = FALSE)
+head(clusterNuc.markers, n = 5)
+```
+
+```{r}
+VlnPlot(kidney.integrated, features = c("Cyp3a13", "Cdk6"))
+```
+
+
+```{r}
+# you can plot raw counts as well
+VlnPlot(kidney.integrated, features = c("Cdk6", "Wnk3"),  log = TRUE)
+```
+
+
+```{r}
+FeaturePlot(kidney.integrated, features = c("Cdk6", "Wnk3", "Ttr", "Jun"))
+```
+
+
+```{r}
+top10 <- kidney.integrated.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+
+pdf(paste("heatmap_clusters.pdf",sep=""))
+DoHeatmap(kidney.integrated, features = top10$gene) 
+dev.off()
+DoHeatmap(kidney.integrated, features = top10$gene) 
+```
+
+```{r}
+markers <- FindMarkers(kidney.integrated, ident.1 = "sCellDropseq", ident.2 = "sNucDropseq", verbose = FALSE, assay = "integrated", slot = "scale.data", min.pct = 0.25, test.use = "wilcox", logfc.threshold = 0.25)
+markers <- markers %>%  arrange(avg_diff)
+#p_data <-   top  %>% filter(adj.P.Val <0.01 & abs(logFC) > 2.5)  
+head(markers, n = 25)
+```
+
+
+```{r}
+write.csv2(markers, "markers.csv")
+```
+
+# ORA
+
+```{r}
+markers<-read.csv2("./markers.csv" )
+healthy<-read.delim("/home/nrb/Escritorio/perAnna/20_sc_kidney/healthy.dge.txt")
+
+
+allEntrezs <- rownames(healthy)
+rownames(markers)<-markers$X
+selectedEntrezsUP <- markers$X
+length(allEntrezs); length(selectedEntrezsUP)
+
+library(clusterProfiler)
+library(org.Mm.eg.db)
+ego <- enrichGO(gene = selectedEntrezsUP, 
+                universe = allEntrezs,
+                keyType = "SYMBOL",
+                OrgDb = org.Mm.eg.db, 
+                ont = "BP", 
+                pAdjustMethod = "BH", 
+                qvalueCutoff = 0.01, 
+                readable = TRUE)
+
+```
+
+```{r, warning=FALSE}
+head(ego)
+ego_results <- data.frame(ego)
+write.csv(ego_results, "clusterProfiler_ORAresults_UpGO.csv")
+```
+
+```{r, warning=FALSE}
+pdf(paste("dotplot.pdf",sep=""))
+dotplot(ego, showCategory=10)
+dev.off()
+dotplot(ego, showCategory=10)
+```
+
+```{r, warning=FALSE}
+pdf(paste("GO.pdf",sep=""))
+goplot(ego, showCategory=5, cex=0.5)
+dev.off()
+
+goplot(ego, showCategory=5, cex=0.5)
+```
+
+```{r, warning=FALSE}
+## Gene network para los términos seleccionados
+pdf(paste("cneplot.pdf",sep=""))
+cnetplot(ego) 
+dev.off()
+
+cnetplot(ego) 
+```
+
+
+```{r, warning=FALSE}
+library(clusterProfiler)
+library(ggplot2)
+ego2 = clusterProfiler::simplify(ego, cutoff = 0.01, by = "p.adjust")
+png("./cnetplot_transp.png", units = "in", width = 24, height = 16, res = 600,
+    bg = "transparent")
+par(bg = NA)
+a <- cnetplot(ego2, showCategory = 5, cex_category = 1, cex_label_category = 2.5,
+    cex_gene = 1, cex_label_gene = 1, circular = FALSE, colorEdge = TRUE)
+a
+invisible(dev.off())
+a
+```
+
+
+
+
+
+```{r, warning=FALSE}
+## Enrichment Map
+library(enrichplot)
+ego_sim <- pairwise_termsim(ego)
+pdf(paste("emaplot.pdf",sep=""))
+emapplot(ego_sim, cex_label_category=0.6)
+dev.off()
+
+emapplot(ego_sim, cex_label_category=0.6)
+```
+
+```{r, warning=FALSE, fig.width=15, fig.height=15}
+term_similarity_matrix = pairwise_termsim(ego)
+emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+
+pdf(paste("emaplot_grouped.pdf",sep=""),width = 10, height = 10)
+emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+dev.off()
+```
+
+```{r, warning=FALSE}
+library(enrichplot)
+heatplot(ego)
+
+pdf(paste("heatplot_ego.pdf",sep=""),width = 18, height = 20)
+heatplot(ego)
+dev.off()
+```
+
+
+```{r}
+library(geneset)
+library(genekitr)
+
+mm10_gs <- geneset::getGO(org = "mouse",ont = "bp")
+
+# ORA analysis
+ego3 <- genORA(selectedEntrezsUP, geneset = mm10_gs, p_cutoff = 0.01, q_cutoff = 0.01)
+# next we only show ten sample terms 
+ego3 <- ego3[1:10, ]
+head(ego3)
+```
+
+# Bar Plot
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "bar")
+p2 <- plotEnrich(ego3, plot_type = "bar", term_metric = "GeneRatio", stats_metric = "pvalue")
+p3 <- plotEnrich(ego3, plot_type = "bar", up_color = "#E69056", down_color = "#325CAC")
+p4 <- plotEnrich(ego3, plot_type = "bar", wrap_length = 25)
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("BarPlot.pdf",sep=""))
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Bubble Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "bubble")
+p2 <- plotEnrich(ego3, plot_type = "bubble", 
+                 scale_ratio = 0.5, stats_metric = "qvalue")
+p1 / p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("BubblePlot.pdf",sep=""))
+p1 / p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+#  Dot Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "dot")
+p2 <- plotEnrich(ego3,
+  plot_type = "dot",
+  scale_ratio = 0.2,
+  stats_metric = "pvalue",
+  term_metric = "RichFactor"
+)
+p1 + p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("DOTPlot.pdf",sep=""))
+p1 + p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+```{r}
+plotEnrich(ego3,
+           plot_type = 'dot',
+           scale_ratio = 0.5, # dot size
+           main_text_size = 8,
+           legend_text_size = 4,
+           n_term = 6) # show terms
+
+
+pdf(paste("PlotEnrich.pdf",sep=""))
+plotEnrich(ego3,
+           plot_type = 'dot',
+           scale_ratio = 0.5, # dot size
+           main_text_size = 8,
+           legend_text_size =4,
+           n_term = 6) # show terms
+dev.off()
+```
+
+#  Lollipop Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "lollipop")
+p2 <- plotEnrich(ego3,
+  plot_type = "lollipop",
+  scale_ratio = .3,
+  stats_metric = "pvalue",
+  term_metric = "RichFactor",
+  up_color = "#a32a31",
+  down_color = "#f7dcca"
+)
+p1 + p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("Lollipop.pdf",sep=""))
+p1 + p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Heatmap Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "geneheat")
+show_gene = c('MALAT1','ABCC2','ABCC2','ABCC2')
+p2 <- plotEnrich(ego3, plot_type = "geneheat", show_gene = show_gene)
+p3 <- plotEnrich(ego3, plot_type = "geneheat", show_gene = show_gene)
+p1 
+#/ p2 / p3 + plot_annotation(tag_levels = "A")
+
+pdf(paste("Heatmapplot.pdf",sep=""))
+p1  + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+# Wordcloud Plot
+```{r}
+plotEnrich(ego3, plot_type = "wordcloud")
+
+pdf(paste("Wordcloudplot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "wordcloud")
+dev.off()
+```
+
+# Upset Plot
+
+```{r}
+pdf(paste("Upsetplot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "upset",main_text_size = 15,legend_text_size = 8)
+dev.off()
+
+plotEnrich(ego3, plot_type = "upset",main_text_size = 15,legend_text_size = 8)
+```
+#  GO-specific: Terms Tangram Plot
+```{r}
+plotEnrich(ego3, plot_type = "gotangram",main_text_size = 15,legend_text_size = 8, scale_ratio = 0.5, sim_method = "Rel")
+#“bar”, “wego”, “dot”, “bubble”, “lollipop”, “geneheat”, “genechord”, “network”, “gomap”, “goheat”, “gotangram”, “wordcloud”, “upset”
+
+pdf(paste("gotangram.pdf",sep=""))
+plotEnrich(ego3, plot_type = "gotangram",main_text_size = 15,legend_text_size = 8, scale_ratio = 0.5, sim_method = "Rel")
+dev.off()
+```
+
+
+# Network Plot
+
+```{r}
+library(patchwork)
+library(igraph)
+library(ggraph)
+p1 <- plotEnrich(ego3, plot_type = "network", scale_ratio = 0.5)
+p2 <- plotEnrich(ego3, plot_type = "network", 
+                 layout = "circle", scale_ratio = 0.5)
+p3 <- plotEnrich(ego3, plot_type = "network", 
+                 layout = "grid", sim_method = "Wang",
+                 up_color = "#a32a31", down_color = "#f7dcca",
+                 scale_ratio = 0.5)
+(p1 + p2) / p3 + plot_annotation(tag_levels = "A")
+
+
+
+pdf(paste("Network.pdf",sep=""))
+(p1 + p2) / p3 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+#  GO-specific: WEGO Plot
+
+```{r}
+# 1st step: prepare input IDs
+data(geneList, package = "genekitr")
+id <- names(geneList)[abs(geneList) > 2]
+id<-rownames(markers)
+
+# 2nd step: prepare CC and MF gene sets
+go_cc <- geneset::getGO(org = "mouse",ont = "cc")
+go_mf <- geneset::getGO(org = "mouse",ont = "mf")
+
+
+# 3rd step: analysis
+ego_cc <- genORA(id, geneset = go_cc)
+ego_mf <- genORA(id, geneset = go_mf)
+
+
+# 4th step: merge two data frames
+# Note: each data frame should add new column "Ontology"
+ego_cc <- ego_cc %>% dplyr::mutate(Ontology = "cc") %>% dplyr::rename(ID = 1)
+ego_mf <- ego_mf %>% dplyr::mutate(Ontology = "mf") %>% dplyr::rename(ID = 1)
+
+all_ego <- rbind(ego_cc,ego_mf)
+```
+
+```{r }
+plotEnrich(all_ego, plot_type = "wego", n_term = 5)
+
+pdf(paste("WEGOPlot.pdf",sep=""))
+plotEnrich(all_ego, plot_type = "wego", n_term = 5)
+dev.off()
+```
+
+# GO-specific: Map Plot
+
+```{r}
+library(igraph)
+library(ggraph)
+plotEnrich(ego3, plot_type = "gomap", wrap_length = 25,
+           up_color = '#a32a31',down_color = '#3665a6')
+
+pdf(paste("MapPlot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "gomap", wrap_length = 25,
+           up_color = '#a32a31',down_color = '#3665a6')
+dev.off()
+```
+
+# GO-specific: Terms Heatmap Plot
+
+```{r}
+plotEnrich(ego3, plot_type = "goheat", sim_method = "Rel")
+
+pdf(paste("TermsHeatmap.pdf",sep=""))
+plotEnrich(ego3, plot_type = "goheat", sim_method = "Rel")
+dev.off()
+```
+
+# Plot Theme
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "dot")
+p2 <- plotEnrich(ego3,
+  plot_type = "dot",
+  main_text_size = 10,
+  legend_text_size = 10
+)
+
+p3 <- plotEnrich(ego3,
+  plot_type = "dot",
+  border_thick = 3,
+  remove_grid = F
+)
+
+p4 <- plotEnrich(ego3,
+  plot_type = "dot",
+  remove_main_text = T,
+  remove_legend_text = T,
+  remove_legend = T
+)
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("PlotTheme.pdf",sep=""))
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Advanced Plot
+
+```{r}
+# 1st step: prepare input IDs
+# Since the geneList is logFC decreasing ordered, we could take first 100 as up-regulated genes and vice versa.
+markers <- markers[order(markers$avg_diff, decreasing = TRUE), ]
+up_genes <- rownames(markers[markers$avg_diff > 0.3, ])
+down_genes <- rownames(markers[markers$avg_diff < -0.2, ])
+ 
+# 2nd step: prepare gene set
+mm_gs <- geneset::getGO(org = "mouse",ont = "bp")
+
+# 3rd step: ORA analysis separately
+up_go <- genORA(up_genes, geneset = mm_gs)
+down_go <- genORA(down_genes, geneset = mm_gs)
+
+dim(up_go)
+dim(down_go)
+```
+
+
+```{r}
+plotEnrichAdv(up_go, down_go,
+              plot_type = "one",
+              term_metric = "FoldEnrich",
+              stats_metric = "p.adjust",
+              xlim_left = 25, xlim_right = 15) +
+  theme(legend.position = c(0.2, 0.9))
+             
+
+
+pdf(paste("Advanced.pdf",sep=""))
+plotEnrichAdv(up_go, down_go,
+              plot_type = "one",
+              term_metric = "FoldEnrich",
+              stats_metric = "p.adjust",
+              xlim_left = 25, xlim_right = 15) +
+  theme(legend.position = c(0.2, 0.9))
+dev.off()
+```
+
+```{r, fig.height=6, fig.width=12}
+plotEnrichAdv(up_go, down_go,
+              plot_type = "two",
+              term_metric = "FoldEnrich",
+              stats_metric = "pvalue",
+              legend_text_size = 5
+) +
+  theme(legend.position = "none")
+
+
+pdf(paste("Advanced2.pdf",sep=""))
+plotEnrichAdv(up_go, down_go,
+              plot_type = "two",
+              term_metric = "FoldEnrich",
+              stats_metric = "pvalue",
+              legend_text_size = 5
+) +
+  theme(legend.position = "none")
+dev.off()
+```
+
+
