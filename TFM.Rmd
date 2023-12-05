@@ -35,22 +35,41 @@ counts <- read.csv("/home/nrb/Documentos/counts/counts2_reduced_ANNA.csv", row.n
 info <- read.delim("~/Documentos/counts_RSEM/targets.csv", sep=",")
 colnames(counts)<-info[,14]
 rownames(info)<-info$Sample
-
 barcode=factor(info$Sample)
 subsample=factor(info$Subgroup)
 group=factor(info$Group)
 time=factor(info$Time)
 ```
 
+```{r}
+library(edgeR)
+counts.CPM <- cpm(counts)
+head(counts.CPM)
+```
 
 
 ```{r , warning=FALSE}
 y=DGEList(counts=counts)
 isexpr <- rowSums(cpm(y) > 1) >= 3
 y=y[isexpr,keep.lib.size=FALSE]
+```
+
+
+```{r}
+logcounts <- cpm(y,log=TRUE)
+boxplot(logcounts, ylab="Log2-CPM",las=2, xlab="", cex.axis=0.8, main="Boxplots of logCPMs")
+abline(h=median(logcounts), col="blue")
+```
+
+
+```{r , warning=FALSE}
 y=calcNormFactors(y)
 y$samples
 dim(y)
+
+logcounts_norm <- cpm(y,log=TRUE)
+boxplot(logcounts_norm, ylab="Log2-CPM",las=2, xlab="", cex.axis=0.8, main="Boxplots of logCPMs")
+abline(h=median(logcounts_norm), col="blue")
 ```
 
 # Exploración de los datos
@@ -77,24 +96,34 @@ fviz_dist(sampleDists)
 ```
 
 
+
 ## Agrupamiento jerárquico
 Un agrupamiento jerárquico proporciona una representación alternativa, también basada en la matriz de distancias.
 
 ```{r, warning=FALSE}
 hc <- hclust(sampleDists)
-plot(hc, labels = colnames(log2count_norm), main = "Agrpamiento jerárquico de las muestras",
-    cex = 0.8)
+plot(hc, labels = colnames(log2count_norm), main = "Agrupamiento jerárquico de las muestras",
+    cex = 0.8) # Dendograma de distancias entre muestras
 ```
 
-
+```{r}
+library("pheatmap")
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix( sampleDists )
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows = sampleDists,
+         clustering_distance_cols = sampleDists,
+         col = colors)
+```
 
 # Análisis de Escalamiento Multidimensional (MDS)
 Reducción dimensional
 
 ```{r , warning=FALSE}
-plotMDS(y, col=as.numeric(group), labels=barcode, cex = 1 )
+plotMDS(y, col=as.numeric(group), labels=barcode, cex = 0.5)
 pdf(paste("plotMDS.pdf",sep=""))
-plotMDS(y, col=as.numeric(group), labels=barcode, cex = 1 )
+plotMDS(y, col=as.numeric(group), labels=barcode, cex = 0.5)
 dev.off()
 ```
 
@@ -123,7 +152,13 @@ pca.raw.y <- log2(y$counts+1)
 
 pca.y <- PCA(t(pca.raw.y),graph = F)
 fviz_pca_ind(pca.y, col.ind = group)
+
+pdf("PCA.pdf")
+fviz_pca_ind(pca.y, col.ind = group)
+dev.off()
+
 ```
+
 
 
 
@@ -176,7 +211,7 @@ summary(decideTests(fit2))
 
 
 ```{r, warning=FALSE}
-summa.fit <- decideTests(fit2, p.value = 0.01, lfc = 5)
+summa.fit <- decideTests(fit2, p.value = 0.01, lfc = 4.5)
 summary(summa.fit)
 
 ```
@@ -188,7 +223,12 @@ summary(summa.fit)
 ## Volcano Plot
 ```{r, warning=FALSE}
 volcanoplot(fit2, coef = 1, highlight = 10,names=rownames(fit2) ,main =paste( "Differentially expressed genes", sep="\n", "CYT vs NUC"))
-abline(v=c(-5,5))
+abline(v=c(-4.5,4.5))
+
+pdf("volcanoplot.pdf")
+volcanoplot(fit2, coef = 1, highlight = 10,names=rownames(fit2) ,main =paste( "Differentially expressed genes", sep="\n", "CYT vs NUC"))
+abline(v=c(-4.5,4.5))
+dev.off()
 ```
 
 # Perfiles de expresión
@@ -200,7 +240,7 @@ Es decir, fijamos un criterio de selección de genes y retenemos aquellos compon
 ```{r , warning=FALSE}
 for (i in  colnames(fit2$coefficients)){
   top=topTable(fit2,coef=i,sort="p", n=Inf)
-  genes=rownames(top[which(top$adj.P.Val<0.01 & abs(top$logFC)>5),])
+  genes=rownames(top[which(top$adj.P.Val<0.01 & abs(top$logFC)>4.5),])
   write.table(top,paste(i,"_limma_voom.txt",sep=""),quote=F)
   term1=strsplit(i,split="_vs_")[[1]][1]
   term2=strsplit(i,split="_vs_")[[1]][2]
@@ -220,7 +260,7 @@ write.table(v$E,"logcpm.txt",quote=F)
 ```{r, warning=FALSE}
 for (i in  colnames(fit2$coefficients)){
   top=topTable(fit2,coef=i,sort="p", n=Inf)
-  genes=rownames(top[which(top$adj.P.Val<0.01 & abs(top$logFC)>5),])
+  genes=rownames(top[which(top$adj.P.Val<0.01 & abs(top$logFC)>4.5),])
   write.table(top,paste(i,"_limma_voom.txt",sep=""),quote=F)
   term1=strsplit(i,split="_vs_")[[1]][1]
   term2=strsplit(i,split="_vs_")[[1]][2]
@@ -237,8 +277,8 @@ for (i in  colnames(fit2$coefficients)){
 
 
 ```{r, warning=FALSE}
-length(which(top$adj.P.Val < 0.01 & abs(top$logFC) > 5))
-p_data <-   top  %>% filter(adj.P.Val <0.01 & abs(logFC) > 3)   
+length(which(top$adj.P.Val < 0.01 & abs(top$logFC) > 4.5))
+p_data <-   top  %>% filter(adj.P.Val <0.01 & abs(logFC) > 4.5)   
 
 p_data %>%  ggplot(aes(x=adj.P.Val,y=logFC)) + 
   geom_text(label=rownames(p_data), size=2.5,alpha=0.7, aes(col=AveExpr))
@@ -247,15 +287,19 @@ p_data %>%  ggplot(aes(x=adj.P.Val,y=logFC)) +
 # Top tables
 
 ```{r, warning=FALSE}
-DEGs <- top %>%  arrange(logFC) %>% filter(adj.P.Val <0.01 & abs(logFC) > 5) 
+genes_sin_version <- sub("\\.\\d+$", "", rownames(top))
+top$Gene <- rownames(top) <- genes_sin_version
+DEGs <- top %>%  arrange(logFC) %>% filter(adj.P.Val <0.01 & abs(logFC) > 4.5) 
 head(DEGs)
+
+write.table(DEGs, file = "./DEG_liver.txt", row.names = F, sep = "\t", quote = F)
 ```
 
 ```{r , warning=FALSE}
 genes_sin_version <- sub("\\.\\d+$", "", rownames(top))
 top$Gene <- rownames(top) <- genes_sin_version
 top <- top[,c("Gene", names(top)[1:6])]
-write.table(top, file = "~/Documentos/R/Cyt_v_Nuc.txt", row.names = F, sep = "\t", quote = F)
+write.table(top, file = "./Cyt_v_Nuc.txt", row.names = F, sep = "\t", quote = F)
 ```
 
 
@@ -265,11 +309,12 @@ Nos centraremos únicamente en la lista de genes "up-regulados" y "down-regulado
 
 Para el análisis de enriquecimiento utilizaremos la función `enrichGO` del paquete `clusterProfiler muy parecida a las de otros paquetes como `GOstats`.
 
+Análisis de sobrerrepresentación usando clusterProfiler
 
 ```{r , warning=FALSE}
 head(top)
 allEntrezs <- genes_sin_version
-selectedEntrezsUP <- rownames(subset(top, (abs(logFC) > 5) & (adj.P.Val < 0.01)))
+selectedEntrezsUP <- rownames(subset(top, (abs(logFC) > 4.5) & (adj.P.Val < 0.01)))
 length(allEntrezs); length(selectedEntrezsUP)
 
 library(clusterProfiler)
@@ -300,7 +345,7 @@ Uno de los aspectos interesantes del paquete `clusterProfiler` es que permite vi
 Este gráfico compara visualmente las categorías enriquecidas (de más a menos enriquecidas) visualizando simultáneamente cuan enriquecidas estan y el p-valor del test de enriquecimiento.
 ```{r, warning=FALSE}
 dotplot(ego, showCategory=10)
-pdf(paste("dotplot.pdf",sep=""))
+pdf(paste("dotplot1.pdf",sep=""))
 dotplot(ego, showCategory=10)
 dev.off()
 ```
@@ -312,7 +357,7 @@ dev.off()
 Este gráfico permite visualizar los términos seleccionados dentro del sub-grafo de la GO que los contiene. Esto nos, permite por ejemplo, hacernos una idea de si estan muy dispersos, o no, en la  jerarquía y de si se trata de términos muy generales o más específicos.
 
 ```{r, warning=FALSE}
-pdf(paste("GO.pdf",sep=""))
+pdf(paste("GO1.pdf",sep=""))
 goplot(ego, showCategory=5, cex=0.5)
 dev.off()
 
@@ -322,7 +367,7 @@ goplot(ego, showCategory=5, cex=0.5)
 De forma parecida una red de genes nos permite visualizar la asociación entre los genes y las categorías seleccionadas en las que éstos genes estan anotados.
 ```{r, warning=FALSE}
 ## Gene network para los términos seleccionados
-pdf(paste("cneplot.pdf",sep=""))
+pdf(paste("cneplot1.pdf",sep=""))
 cnetplot(ego) 
 dev.off()
 
@@ -334,7 +379,7 @@ cnetplot(ego)
 library(clusterProfiler)
 library(ggplot2)
 ego2 = clusterProfiler::simplify(ego, cutoff = 0.01, by = "p.adjust")
-png("figures/cnetplot_transp.png", units = "in", width = 24, height = 16, res = 600,
+png("./cnetplot_transp1.png", units = "in", width = 24, height = 16, res = 600,
     bg = "transparent")
 par(bg = NA)
 a <- cnetplot(ego2, showCategory = 5, cex_category = 1, cex_label_category = 2.5,
@@ -351,7 +396,7 @@ Finalmente este gráfico permite simplificar las visualizaciones y agrupa los 10
 ## Enrichment Map
 library(enrichplot)
 ego_sim <- pairwise_termsim(ego)
-pdf(paste("emaplot.pdf",sep=""))
+pdf(paste("emaplot1.pdf",sep=""))
 emapplot(ego_sim, cex_label_category=0.6)
 dev.off()
 
@@ -360,15 +405,358 @@ emapplot(ego_sim, cex_label_category=0.6)
 
 
 
-```{r, warning=FALSE}
+```{r, warning=FALSE, fig.width=15, fig.height=15}
 term_similarity_matrix = pairwise_termsim(ego)
 emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+
+pdf(paste("emaplot_grouped1.pdf",sep=""),width = 10, height = 10)
+emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+dev.off()
 ```
 
 ```{r, warning=FALSE}
 library(enrichplot)
 heatplot(ego)
+
+pdf(paste("heatplot_ego1.pdf",sep=""),width = 9, height = 10)
+heatplot(ego)
+dev.off()
 ```
+
+```{r}
+library(geneset)
+library(genekitr)
+
+selectedEntrezsUP <- rownames(subset(top, (abs(logFC) > 4.5) & (adj.P.Val < 0.01)))
+mm10_gs <- geneset::getGO(org = "mouse",ont = "bp")
+dim(mm10_gs); length(selectedEntrezsUP)
+
+# ORA analysis
+ego3 <- genORA(selectedEntrezsUP, geneset = mm10_gs, p_cutoff = 0.01, q_cutoff = 0.01)
+# next we only show ten sample terms 
+ego3 <- ego3[1:10, ]
+head(ego3)
+
+```
+
+# Bar Plot
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "bar")
+p2 <- plotEnrich(ego3, plot_type = "bar", term_metric = "GeneRatio", stats_metric = "pvalue")
+p3 <- plotEnrich(ego3, plot_type = "bar", up_color = "#E69056", down_color = "#325CAC")
+p4 <- plotEnrich(ego3, plot_type = "bar", wrap_length = 25)
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("BarPlot.pdf",sep=""))
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+
+#  Bubble Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "bubble")
+p2 <- plotEnrich(ego3, plot_type = "bubble", 
+                 scale_ratio = 0.5, stats_metric = "qvalue")
+p1 / p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("BubblePlot.pdf",sep=""))
+p1 / p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+#  Dot Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "dot")
+p2 <- plotEnrich(ego3,
+  plot_type = "dot",
+  scale_ratio = 0.2,
+  stats_metric = "pvalue",
+  term_metric = "RichFactor"
+)
+p1 + p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("DOTPlot.pdf",sep=""))
+p1 + p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+```{r}
+plotEnrich(ego3,
+           plot_type = 'dot',
+           scale_ratio = 0.5, # dot size
+           main_text_size = 8,
+           legend_text_size = 4,
+           n_term = 6) # show terms
+
+
+pdf(paste("PlotEnrich.pdf",sep=""))
+plotEnrich(ego3,
+           plot_type = 'dot',
+           scale_ratio = 0.5, # dot size
+           main_text_size = 8,
+           legend_text_size =4,
+           n_term = 6) # show terms
+dev.off()
+```
+
+#  Lollipop Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "lollipop")
+p2 <- plotEnrich(ego3,
+  plot_type = "lollipop",
+  scale_ratio = .5,
+  stats_metric = "pvalue",
+  term_metric = "RichFactor",
+  up_color = "#a32a31",
+  down_color = "#f7dcca"
+)
+p1 + p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("Lollipop.pdf",sep=""))
+p1 + p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Heatmap Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "geneheat")
+show_gene = c('malat1','abcc2','abcc2','abcc2')
+p2 <- plotEnrich(ego3, plot_type = "geneheat", show_gene = show_gene)
+p3 <- plotEnrich(ego3, plot_type = "geneheat", show_gene = show_gene)
+p1 / p2 / p3 + plot_annotation(tag_levels = "A")
+
+pdf(paste("Heatmapplot.pdf",sep=""))
+p1  + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+# Wordcloud Plot
+```{r}
+plotEnrich(ego3, plot_type = "wordcloud")
+
+pdf(paste("Wordcloudplot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "wordcloud")
+dev.off()
+```
+
+# Upset Plot
+
+```{r}
+pdf(paste("Upsetplot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "upset",main_text_size = 15,legend_text_size = 8)
+dev.off()
+
+plotEnrich(ego3, plot_type = "upset",main_text_size = 15,legend_text_size = 8)
+```
+#  GO-specific: Terms Tangram Plot
+```{r}
+plotEnrich(ego3, plot_type = "gotangram",main_text_size = 15,legend_text_size = 8, scale_ratio = 0.5, sim_method = "Rel")
+#“bar”, “wego”, “dot”, “bubble”, “lollipop”, “geneheat”, “genechord”, “network”, “gomap”, “goheat”, “gotangram”, “wordcloud”, “upset”
+
+pdf(paste("gotangram.pdf",sep=""))
+plotEnrich(ego3, plot_type = "gotangram",main_text_size = 15,legend_text_size = 8, scale_ratio = 0.5, sim_method = "Rel")
+dev.off()
+```
+
+
+# Network Plot
+
+```{r}
+library(patchwork)
+library(igraph)
+library(ggraph)
+p1 <- plotEnrich(ego3, plot_type = "network", scale_ratio = 0.5)
+p2 <- plotEnrich(ego3, plot_type = "network", 
+                 layout = "circle", scale_ratio = 0.5)
+p3 <- plotEnrich(ego3, plot_type = "network", 
+                 layout = "grid", sim_method = "Wang",
+                 up_color = "#a32a31", down_color = "#f7dcca",
+                 scale_ratio = 0.5)
+(p1 + p2) / p3 + plot_annotation(tag_levels = "A")
+
+
+
+pdf(paste("Network.pdf",sep=""))
+(p1 + p2) / p3 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+#  GO-specific: WEGO Plot
+
+```{r}
+# 1st step: prepare input IDs
+id<-selectedEntrezsUP
+
+# 2nd step: prepare CC and MF gene sets
+go_cc <- geneset::getGO(org = "mouse",ont = "cc")
+go_mf <- geneset::getGO(org = "mouse",ont = "mf")
+
+
+# 3rd step: analysis
+ego_cc <- genORA(id, geneset = go_cc)
+ego_mf <- genORA(id, geneset = go_mf)
+
+
+# 4th step: merge two data frames
+# Note: each data frame should add new column "Ontology"
+ego_cc <- ego_cc %>% dplyr::mutate(Ontology = "cc") %>% dplyr::rename(ID = 1)
+ego_mf <- ego_mf %>% dplyr::mutate(Ontology = "mf") %>% dplyr::rename(ID = 1)
+
+all_ego <- rbind(ego_cc,ego_mf)
+```
+
+```{r }
+plotEnrich(all_ego, plot_type = "wego", n_term = 5)
+
+pdf(paste("WEGOPlot.pdf",sep=""))
+plotEnrich(all_ego, plot_type = "wego", n_term = 5)
+dev.off()
+```
+
+# GO-specific: Map Plot
+
+```{r}
+library(igraph)
+library(ggraph)
+plotEnrich(ego3, plot_type = "gomap", wrap_length = 25,
+           up_color = '#a32a31',down_color = '#3665a6')
+
+pdf(paste("MapPlot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "gomap", wrap_length = 25,
+           up_color = '#a32a31',down_color = '#3665a6')
+dev.off()
+```
+
+# GO-specific: Terms Heatmap Plot
+
+```{r}
+plotEnrich(ego3, plot_type = "goheat", sim_method = "Rel")
+
+pdf(paste("TermsHeatmap.pdf",sep=""))
+plotEnrich(ego3, plot_type = "goheat", sim_method = "Rel")
+dev.off()
+```
+
+# Plot Theme
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "dot")
+p2 <- plotEnrich(ego3,
+  plot_type = "dot",
+  main_text_size = 10,
+  legend_text_size = 10
+)
+
+p3 <- plotEnrich(ego3,
+  plot_type = "dot",
+  border_thick = 3,
+  remove_grid = F
+)
+
+p4 <- plotEnrich(ego3,
+  plot_type = "dot",
+  remove_main_text = T,
+  remove_legend_text = T,
+  remove_legend = T
+)
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("PlotTheme.pdf",sep=""))
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Advanced Plot
+
+```{r}
+# 1st step: prepare input IDs
+# Since the geneList is logFC decreasing ordered, we could take first 100 as up-regulated genes and vice versa.
+
+up_genes <-rownames(subset(top, logFC > 8 & (adj.P.Val < 0.01)))
+down_genes <- rownames(subset(top, logFC < -3 & (adj.P.Val < 0.01)))
+ 
+# 2nd step: prepare gene set
+mm_gs <- geneset::getGO(org = "mouse",ont = "bp")
+
+# 3rd step: ORA analysis separately
+up_go <- genORA(up_genes, geneset = mm_gs)
+down_go <- genORA(down_genes, geneset = mm_gs)
+
+dim(up_go)
+dim(down_go)
+```
+
+
+```{r}
+plotEnrichAdv(up_go, down_go,
+              plot_type = "one",
+              term_metric = "FoldEnrich",
+              stats_metric = "p.adjust",
+              xlim_left = 25, xlim_right = 15) +
+  theme(legend.position = c(0.2, 0.9))
+             
+
+
+pdf(paste("Advanced.pdf",sep=""))
+plotEnrichAdv(up_go, down_go,
+              plot_type = "one",
+              term_metric = "FoldEnrich",
+              stats_metric = "p.adjust",
+              xlim_left = 25, xlim_right = 15) +
+  theme(legend.position = c(0.2, 0.9))
+dev.off()
+```
+
+```{r, fig.height=6, fig.width=12}
+plotEnrichAdv(up_go, down_go,
+              plot_type = "two",
+              term_metric = "FoldEnrich",
+              stats_metric = "pvalue",
+              legend_text_size = 5
+) +
+  theme(legend.position = "none")
+
+
+pdf(paste("Advanced2.pdf",sep=""))
+plotEnrichAdv(up_go, down_go,
+              plot_type = "two",
+              term_metric = "FoldEnrich",
+              stats_metric = "pvalue",
+              legend_text_size = 5
+) +
+  theme(legend.position = "none")
+dev.off()
+```
+
+
+
+
+
+
+
+
+
 
 
 
@@ -392,7 +780,7 @@ merge_biotypes<-merge(x=info, y=biotypes, by.x = "Run", by.y = "Sample")
 merge_biotypes<-merge_biotypes[,-c(2:11)]
 ```
 
-# Distribució sengons genomic origin
+# Distribució segons genomic origin
 
 ```{r}
 library(tidyr)
@@ -442,13 +830,17 @@ mean_data <- lapply(groups, function(group_data) {
 # Convertir la lista de data frames en un único data frame
 mean_data <- do.call(rbind, mean_data)
 
+pdf(paste("Grafic1.pdf",sep=""))
 # Crear un gráfico de barras apiladas en porcentaje con grupos en el eje X
 ggplot(mean_data, aes(x = Group, y = mean_percentage, fill = Category)) +
   geom_bar(stat = "identity") +
-  labs(title = "Media de Categorías por Grupo", x = "Grupo", y = "Porcentaje") +
+  labs(title = "", x = "Grupo", y = "Porcentaje") +
   scale_fill_manual(values = c("Exonic" = "blue", "Intronic" = "green", "Intergenic" = "orange")) +
-  theme_minimal()
-
+  theme_minimal()+ 
+  theme(
+    legend.text = element_text(size = 40),     # Tamaño del texto de la leyenda
+    legend.title = element_text(size = 40)  )   # Tamaño del título de la leyenda
+dev.off()
 
 # Calcular la media para cada grupo
 mean_data2 <- lapply(groups, function(group_data) {
@@ -522,13 +914,14 @@ mean_data <- lapply(groups, function(group_data) {
 # Convertir la lista de data frames en un único data frame
 mean_data <- do.call(rbind, mean_data)
 
+pdf(paste("Grafic2.pdf",sep=""))
 # Crear un gráfico de barras apiladas en porcentaje con grupos en el eje X
 ggplot(mean_data, aes(x = Group, y = mean_percentage, fill = Category)) +
   geom_bar(stat = "identity") +
   labs(title = "Media de Categorías por Grupo", x = "Grupo", y = "Porcentaje") +
   scale_fill_manual(values = c("protein_coding" = "#FF0000", "non_protein_coding" = "green")) +
   theme_minimal()
-
+dev.off()
 
 # Calcular la media para cada grupo
 mean_data2 <- lapply(groups, function(group_data) {
@@ -543,6 +936,7 @@ mean_data2 <- lapply(groups, function(group_data) {
 
 # Convertir la lista de data frames en un único data frame
 mean_data2 <- do.call(rbind, mean_data2)
+
 
 # Crear un gráfico de barras apiladas en porcentaje con grupos en el eje X
 ggplot(mean_data2, aes(x = Group, y = mean_fraction, fill = Category)) +
@@ -691,10 +1085,11 @@ mean_data <- lapply(groups, function(group_data) {
 # Convertir la lista de data frames en un único data frame
 mean_data <- do.call(rbind, mean_data)
 
+pdf(paste("Grafic3.pdf",sep=""))
 # Crear un gráfico de barras apiladas en porcentaje con grupos en el eje X
 ggplot(mean_data, aes(x = Group, y = mean_percentage, fill = Category)) +
   geom_bar(stat = "identity") +
-  labs(title = "Media de Categorías por Grupo", x = "Grupo", y = "Porcentaje") +
+  labs(title = "", x = "Grupo", y = "Porcentaje") +
   scale_fill_manual(values = c(
     "protein_coding" = "#0FBBF0",
     "TEC" = "#0000FF",  # Azul
@@ -734,8 +1129,7 @@ ggplot(mean_data, aes(x = Group, y = mean_percentage, fill = Category)) +
     "Mt_rRNA" = "#D3D3D3"
   )) +
   theme_minimal()
-
-
+dev.off()
 
 
 # Calcular la media para cada grupo
@@ -866,13 +1260,18 @@ mean_data <- lapply(groups, function(group_data) {
 # Convertir la lista de data frames en un único data frame
 mean_data <- do.call(rbind, mean_data)
 
+pdf(paste("Grafic4.pdf",sep=""))
 # Crear un gráfico de barras apiladas en porcentaje con grupos en el eje X
 ggplot(mean_data, aes(x = Group, y = mean_percentage, fill = Category)) +
   geom_bar(stat = "identity") +
-  labs(title = "Media de Categorías por Grupo", x = "Grupo", y = "Porcentaje") +
+  labs(title = "", x = "Grupo", y = "Porcentaje") +
   scale_fill_manual(values = c("Aligned uniquely to a gene" = "blue", "Aligned to multiple genes" = "green", "Filtered due to too many alignments" = "orange",  "Unalignable reads" = "#FFC0CB"))+
-  theme_minimal()
-
+  theme_minimal() + 
+  theme(
+    legend.text = element_text(size = 18),     # Tamaño del texto de la leyenda
+    legend.title = element_text(size = 20)     # Tamaño del título de la leyenda
+  )
+dev.off()
 
 
 # Calcular la media para cada grupo
@@ -981,7 +1380,7 @@ mean_data <- lapply(groups, function(group_data) {
 
 # Convertir la lista de data frames en un único data frame
 mean_data <- do.call(rbind, mean_data)
-
+pdf(paste("Grafic5.pdf",sep=""))
 # Crear un gráfico de barras apiladas en porcentaje con grupos en el eje X
 ggplot(mean_data, aes(x = Group, y = mean_percentage, fill = Category)) +
   geom_bar(stat = "identity") +
@@ -997,7 +1396,7 @@ ggplot(mean_data, aes(x = Group, y = mean_percentage, fill = Category)) +
     "silva-euk-28s-id98_count" = "#808080"
   )) +
   theme_minimal()
-
+dev.off()
 
 
 # Calcular la media para cada grupo
