@@ -1,0 +1,724 @@
+---
+title: "integrated_liver"
+author: "Núria Rivera Brugués"
+date: "2023-11-26"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache=F)
+```
+
+```{r}
+library(Seurat)
+library(sp)
+library(Matrix)
+library(SeuratObject)
+library(patchwork)
+library(dplyr)
+library(tidyverse)
+library(ggplot2) # plots
+library(magrittr) # %>% operator
+library(reticulate) # required for "leiden" clustering
+library(enrichR) # functional enrichment
+library(future) # multicore support for Seurat
+library(cowplot)
+library(SingleCellExperiment)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+```
+
+```{r}
+dir1<-"/home/nrb/Escritorio/perAnna/18_hepato/14414522_C41_TST_raw_data/"
+dir2<-"/home/nrb/Escritorio/perAnna/18_hepato/14414525_C41_SC_raw_data/"
+matrix_obj_C41_TST<-Read10X(dir1, unique.features = TRUE, strip.suffix = TRUE)
+matrix_obj_C41_TST[1:10, 1:19]
+matrix_obj_C41_SC<-Read10X(dir2, unique.features = TRUE, strip.suffix = TRUE)
+matrix_obj_C41_SC[1:10, 1:19]
+seurat_C41_TST = CreateSeuratObject(counts =  matrix_obj_C41_TST, project = "TST", min.cells = 5, min.features = 200)
+seurat_C41_SC = CreateSeuratObject(counts =  matrix_obj_C41_SC, project = "SC", min.cells = 5, min.features = 200)
+
+sc.sn1 <- merge(seurat_C41_SC, y = seurat_C41_TST, add.cell.ids = c("SC", "TST"), project = "sc.sn1")
+sc.sn1
+head(colnames(sc.sn1))
+table(sc.sn1$orig.ident)
+
+# Get cell names
+TST.cell_names <- grep(pattern = "^TST", x = colnames(sc.sn1), value = T)
+SC.cell_names <- grep(pattern = "^SC", x = colnames(sc.sn1), value = T)
+
+# Create new meta.data column
+sc.sn1@meta.data$Fraction[colnames(sc.sn1) %in% TST.cell_names] <- "TST"
+sc.sn1@meta.data$Fraction[colnames(sc.sn1) %in% SC.cell_names] <- "SC"
+saveRDS(sc.sn1, file = "sc.sn41.rds")
+```
+
+
+
+```{r}
+sc.sn41 <- readRDS("sc.sn41.rds")
+head(colnames(sc.sn41))
+table(sc.sn41$orig.ident)
+```
+
+## QC and selecting cells for further analysis
+```{r}
+pbmc<-sc.sn41
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+```
+
+
+```{r}
+# Visualize QC metrics as a violin plot
+pdf(paste("QC",sep=""))
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), ncol = 3)
+dev.off()
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA","percent.mt"), ncol = 3)
+```
+
+
+```{r}
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+pdf(paste("scatter_features",sep=""))
+plot1 + plot2
+dev.off()
+
+plot1 + plot2
+```
+
+```{r}
+pbmc <- subset(pbmc, subset = nFeature_RNA > 200 & nFeature_RNA < 8000 & percent.mt < 80 )
+```
+
+# Normalizing the data
+
+```{r}
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+# Identification of highly variable features (feature selection)
+```{r}
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pbmc), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(pbmc)+ NoLegend()
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)+ NoLegend()
+pdf(paste("variable.features",sep=""))
+plot_grid(plot1 + plot2)
+dev.off()
+
+plot_grid(plot1 + plot2)
+```
+
+
+
+
+
+```{r}
+sc.sn1.list <- SplitObject(sc.sn41, split.by = "Fraction")
+features <- SelectIntegrationFeatures(object.list = sc.sn1.list)
+sc.sn1.list <- lapply(X = sc.sn1.list, FUN = function(x) {
+  x <- NormalizeData(x, normalization.method = "LogNormalize", scale.factor = 10000)
+  x <- ScaleData(x, features = features, verbose = FALSE)
+  x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+liver.anchors <- FindIntegrationAnchors(object.list = sc.sn1.list, dims = 1:30)
+
+liver.integrated <- IntegrateData(anchorset = liver.anchors, dims = 1:30)
+
+```
+
+```{r}
+library(ggplot2)
+library(cowplot)
+# switch to integrated assay. The variable features of this assay are automatically
+# set during IntegrateData
+DefaultAssay(liver.integrated) <- "integrated"
+
+                                        # Run the standard workflow for visualization and clustering
+liver.integrated <- ScaleData(liver.integrated, verbose = FALSE)
+liver.integrated <- RunPCA(liver.integrated, npcs = 30, verbose = FALSE)
+liver.integrated <- RunUMAP(liver.integrated, reduction = "pca", dims = 1:30)
+liver.integrated <- RunTSNE(liver.integrated, dims.use = 1:10, do.fast = TRUE)
+p1 <- DimPlot(liver.integrated, reduction = "umap", group.by = "Fraction")
+p2 <- DimPlot(liver.integrated, reduction = "tsne", group.by = "Fraction") 
+pdf(paste("umap.tsne",sep=""))
+plot_grid(p1 +p2)
+dev.off()
+plot_grid(p1 +p2)
+```
+
+
+```{r}
+pdf(paste("umap",sep=""))
+DimPlot(liver.integrated, reduction = "umap", group.by = "Fraction")
+dev.off()
+DimPlot(liver.integrated, reduction = "umap", group.by = "Fraction")
+```
+
+
+```{r}
+pdf(paste("tsne",sep=""))
+DimPlot(liver.integrated, reduction = "tsne", group.by = "Fraction") 
+dev.off()
+DimPlot(liver.integrated, reduction = "tsne", group.by = "Fraction")
+```
+
+```{r}
+pdf(paste("Vizdim",sep=""))
+VizDimLoadings(liver.integrated, dims = 1:2, reduction = "pca")
+dev.off()
+VizDimLoadings(liver.integrated, dims = 1:2, reduction = "pca")
+```
+
+```{r}
+pdf(paste("pca.pdf",sep=""))
+DimPlot(liver.integrated, reduction = "pca",group.by = "Fraction")
+dev.off()
+DimPlot(liver.integrated, reduction = "pca",group.by = "Fraction")
+```
+
+```{r}
+pdf(paste("heatmap_PCA.pdf",sep=""))
+DimHeatmap(liver.integrated, dims = 1, cells = 500, balanced = TRUE)
+dev.off()
+DimHeatmap(liver.integrated, dims = 1, cells = 500, balanced = TRUE)
+```
+
+```{r}
+pdf(paste("heatmap_PCA2.pdf",sep=""))
+DimHeatmap(liver.integrated, dims = 1:2, cells = 500, balanced = TRUE)
+dev.off()
+DimHeatmap(liver.integrated, dims = 1:2, cells = 500, balanced = TRUE)
+```
+
+
+
+```{r}
+# Examine and visualize PCA results a few different ways
+print(liver.integrated[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+
+```{r}
+# NOTE: This process can take a long time for big datasets, comment out for expediency. More
+# approximate techniques such as those implemented in ElbowPlot() can be used to reduce
+# computation time
+liver.integrated <- JackStraw(liver.integrated, num.replicate = 100)
+liver.integrated <- ScoreJackStraw(liver.integrated, dims = 1:20)
+```
+
+
+```{r}
+pdf(paste("JackStrawPlot.pdf",sep=""))
+JackStrawPlot(liver.integrated, dims = 1:20)
+dev.off()
+JackStrawPlot(liver.integrated, dims = 1:20)
+```
+
+
+
+```{r}
+pdf(paste("elbowplot.pdf",sep=""))
+ElbowPlot(liver.integrated)
+dev.off()
+ElbowPlot(liver.integrated)
+```
+
+
+
+# Finding differentially expressed features (cluster biomarkers)
+
+
+```{r}
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+liver.integrated.markers <- FindAllMarkers(liver.integrated, only.pos = FALSE, min.pct = 0.25, logfc.threshold = 0.25)
+liver.integrated.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+write.csv2(liver.integrated.markers, "liver.integrated.markers41.csv")
+```
+
+```{r}
+clusterSC.markers <- FindMarkers(liver.integrated, ident.1 = "SC", logfc.threshold = 0.25, test.use = "roc", only.pos = FALSE)
+head(clusterSC.markers, n = 5)
+write.csv2(clusterSC.markers, "clusterSC.markers.csv")
+```
+
+```{r}
+clusterTST.markers <- FindMarkers(liver.integrated, ident.1 = "TST", logfc.threshold = 0.25, test.use = "roc", only.pos = FALSE)
+head(clusterTST.markers, n = 5)
+write.csv2(clusterTST.markers, "clusterTST.markers.csv")
+```
+
+```{r}
+VlnPlot(liver.integrated, features = c("HBA2", "SYDE2"))
+```
+
+
+```{r}
+# you can plot raw counts as well
+VlnPlot(liver.integrated, features = c("NKG7", "MALAT1"),  log = TRUE)
+```
+
+
+```{r}
+FeaturePlot(liver.integrated, features = c("MALAT1", "NKG7", "HBA2", "SYDE2"))
+```
+
+
+```{r}
+top10 <- liver.integrated.markers %>% group_by(cluster) %>% top_n(n = 15, wt = avg_log2FC)
+
+pdf(paste("heatmap_clusters.pdf",sep=""))
+DoHeatmap(liver.integrated, features = top10$gene) 
+dev.off()
+DoHeatmap(liver.integrated, features = top10$gene) 
+```
+
+```{r}
+markers41 <- FindMarkers(liver.integrated, ident.1 = "SC", ident.2 = "TST", verbose = FALSE, assay = "integrated", slot = "scale.data", min.pct = 0.25, test.use = "wilcox", logfc.threshold = 0.25)
+head(markers41, n = 5)
+```
+
+
+```{r}
+markers41 <- markers41 %>%  arrange(avg_diff)
+write.csv2(markers41, "markers41.csv")
+```
+
+
+# ORA
+
+
+```{r}
+matrix_obj_C41_SC<-Read10X(dir2, unique.features = TRUE, strip.suffix = TRUE)
+markers41<-read.csv2("./markers41.csv")
+markers41 <- markers41 %>%  arrange(avg_diff)
+sc.sn41 <- readRDS("sc.sn41.rds")
+
+allEntrezs <- rownames(matrix_obj_C41_SC)
+selectedEntrezsUP <- markers41$X
+rownames(markers41)<-markers41$X
+length(allEntrezs); length(selectedEntrezsUP)
+
+
+ego <- enrichGO(gene = selectedEntrezsUP, 
+                universe = allEntrezs,
+                keyType = "SYMBOL",
+                OrgDb = org.Hs.eg.db, 
+                ont = "BP", 
+                pAdjustMethod = "BH", 
+                qvalueCutoff = 0.01, 
+                readable = TRUE)
+
+```
+
+```{r, warning=FALSE}
+head(ego)
+ego_results <- data.frame(ego)
+write.csv(ego_results, "clusterProfiler_ORAresults_UpGO.csv")
+```
+
+```{r, warning=FALSE}
+dotplot(ego, showCategory=10)
+pdf(paste("dotplot.pdf",sep=""))
+dotplot(ego, showCategory=10)
+dev.off()
+```
+
+```{r, warning=FALSE}
+pdf(paste("GO.pdf",sep=""))
+goplot(ego, showCategory=5, cex=0.5)
+dev.off()
+
+goplot(ego, showCategory=5, cex=0.5)
+```
+
+```{r, warning=FALSE}
+## Gene network para los términos seleccionados
+pdf(paste("cneplot.pdf",sep=""))
+cnetplot(ego) 
+dev.off()
+
+cnetplot(ego) 
+```
+
+
+```{r, warning=FALSE}
+
+ego2 = clusterProfiler::simplify(ego, cutoff = 0.01, by = "p.adjust")
+png("./cnetplot_transp.png", units = "in", width = 24, height = 16, res = 600,
+    bg = "transparent")
+par(bg = NA)
+a <- cnetplot(ego2, showCategory = 5, cex_category = 1, cex_label_category = 2.5,
+    cex_gene = 1, cex_label_gene = 1, circular = FALSE, colorEdge = TRUE)
+a
+invisible(dev.off())
+a
+```
+
+
+
+
+
+```{r, warning=FALSE}
+## Enrichment Map
+library(enrichplot)
+ego_sim <- pairwise_termsim(ego)
+pdf(paste("emaplot.pdf",sep=""))
+emapplot(ego_sim, cex_label_category=0.6)
+dev.off()
+
+emapplot(ego_sim, cex_label_category=0.6)
+```
+
+```{r, warning=FALSE, fig.width=15, fig.height=15}
+term_similarity_matrix = pairwise_termsim(ego)
+emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+
+pdf(paste("emaplot_grouped.pdf",sep=""),width = 10, height = 10)
+emapplot(term_similarity_matrix, showCategory = 15, group_category = TRUE, group_legend = TRUE)
+dev.off()
+```
+
+```{r, warning=FALSE}
+library(enrichplot)
+heatplot(ego)
+
+pdf(paste("heatplot_ego.pdf",sep=""),width = 9, height = 10)
+heatplot(ego)
+dev.off()
+```
+
+
+```{r}
+library(geneset)
+library(genekitr)
+
+hg_gs <- geneset::getGO(org = "human",ont = "bp")
+
+# ORA analysis
+ego3 <- genORA(selectedEntrezsUP, geneset = hg_gs, p_cutoff = 0.01, q_cutoff = 0.01)
+# next we only show ten sample terms 
+ego3 <- ego3[1:10, ]
+head(ego3)
+```
+# Bar Plot
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "bar")
+p2 <- plotEnrich(ego3, plot_type = "bar", term_metric = "GeneRatio", stats_metric = "pvalue")
+p3 <- plotEnrich(ego3, plot_type = "bar", up_color = "#E69056", down_color = "#325CAC")
+p4 <- plotEnrich(ego3, plot_type = "bar", wrap_length = 25)
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("BarPlot.pdf",sep=""))
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Bubble Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "bubble")
+p2 <- plotEnrich(ego3, plot_type = "bubble", 
+                 scale_ratio = 0.5, stats_metric = "qvalue")
+p1 / p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("BubblePlot.pdf",sep=""))
+p1 / p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Dot Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "dot")
+p2 <- plotEnrich(ego3,
+  plot_type = "dot",
+  scale_ratio = 0.5,
+  stats_metric = "pvalue",
+  term_metric = "RichFactor"
+)
+p1 + p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("DOTPlot.pdf",sep=""))
+p1 + p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+```{r}
+plotEnrich(ego3,
+           plot_type = 'dot',
+           scale_ratio = 0.5, # dot size
+           main_text_size = 10,
+           legend_text_size =8,
+           n_term = 6) # show terms
+
+
+pdf(paste("PlotEnrich.pdf",sep=""))
+plotEnrich(ego3,
+           plot_type = 'dot',
+           scale_ratio = 0.5, # dot size
+           main_text_size = 10,
+           legend_text_size =8,
+           n_term = 6) # show terms
+dev.off()
+```
+
+#  Lollipop Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "lollipop")
+p2 <- plotEnrich(ego3,
+  plot_type = "lollipop",
+  scale_ratio = .2,
+  stats_metric = "pvalue",
+  term_metric = "RichFactor",
+  up_color = "#a32a31",
+  down_color = "#f7dcca"
+)
+p1 + p2 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("Lollipop.pdf",sep=""))
+p1 + p2 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+#  Heatmap Plot
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "geneheat")
+show_gene = c('MALAT1','ABCC2','ABCC2','ABCC2')
+p2 <- plotEnrich(ego3, plot_type = "geneheat", show_gene = show_gene)
+p3 <- plotEnrich(ego3, plot_type = "geneheat", show_gene = show_gene)
+p1 / p2 / p3 + plot_annotation(tag_levels = "A")
+
+pdf(paste("Heatmapplot.pdf",sep=""))
+p1  + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+# Wordcloud Plot
+```{r}
+plotEnrich(ego3, plot_type = "wordcloud")
+
+pdf(paste("Wordcloudplot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "wordcloud")
+dev.off()
+```
+
+
+# Upset Plot
+
+```{r}
+pdf(paste("Upsetplot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "upset",main_text_size = 15,legend_text_size = 8)
+dev.off()
+
+plotEnrich(ego3, plot_type = "upset",main_text_size = 15,legend_text_size = 8)
+```
+
+#  GO-specific: Terms Tangram Plot
+```{r}
+plotEnrich(ego3, plot_type = "gotangram",main_text_size = 15,legend_text_size = 8, scale_ratio = 0.5, sim_method = "Rel")
+#“bar”, “wego”, “dot”, “bubble”, “lollipop”, “geneheat”, “genechord”, “network”, “gomap”, “goheat”, “gotangram”, “wordcloud”, “upset”
+
+pdf(paste("gotangram.pdf",sep=""))
+plotEnrich(ego3, plot_type = "gotangram",main_text_size = 15,legend_text_size = 8, scale_ratio = 0.5, sim_method = "Rel")
+dev.off()
+```
+
+
+
+# Network Plot
+
+```{r}
+library(patchwork)
+library(igraph)
+library(ggraph)
+p1 <- plotEnrich(ego3, plot_type = "network", scale_ratio = 0.5)
+p2 <- plotEnrich(ego3, plot_type = "network", 
+                 layout = "circle", scale_ratio = 0.5)
+p3 <- plotEnrich(ego3, plot_type = "network", 
+                 layout = "grid", sim_method = "Wang",
+                 up_color = "#a32a31", down_color = "#f7dcca",
+                 scale_ratio = 0.5)
+(p1 + p2) / p3 + plot_annotation(tag_levels = "A")
+
+
+
+pdf(paste("Network.pdf",sep=""))
+(p1 + p2) / p3 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+
+
+#  GO-specific: WEGO Plot
+
+```{r}
+# 1st step: prepare input IDs
+id<- markers41$X
+
+# 2nd step: prepare CC and MF gene sets
+go_cc <- geneset::getGO(org = "human",ont = "cc")
+go_mf <- geneset::getGO(org = "human",ont = "mf")
+
+
+# 3rd step: analysis
+ego_cc <- genORA(id, geneset = go_cc)
+ego_mf <- genORA(id, geneset = go_mf)
+
+
+# 4th step: merge two data frames
+# Note: each data frame should add new column "Ontology"
+ego_cc <- ego_cc %>% dplyr::mutate(Ontology = "cc") %>% dplyr::rename(ID = 1)
+ego_mf <- ego_mf %>% dplyr::mutate(Ontology = "mf") %>% dplyr::rename(ID = 1)
+
+all_ego <- rbind(ego_cc,ego_mf)
+```
+
+
+```{r }
+plotEnrich(all_ego, plot_type = "wego", n_term = 5)
+
+pdf(paste("WEGOPlot.pdf",sep=""))
+plotEnrich(all_ego, plot_type = "wego", n_term = 5)
+dev.off()
+```
+
+# GO-specific: Map Plot
+
+```{r}
+library(igraph)
+library(ggraph)
+plotEnrich(ego3, plot_type = "gomap", wrap_length = 25,
+           up_color = '#a32a31',down_color = '#3665a6')
+
+pdf(paste("MapPlot.pdf",sep=""))
+plotEnrich(ego3, plot_type = "gomap", wrap_length = 25,
+           up_color = '#a32a31',down_color = '#3665a6')
+dev.off()
+```
+
+# GO-specific: Terms Heatmap Plot
+
+```{r}
+plotEnrich(ego3, plot_type = "goheat", sim_method = "Rel")
+
+pdf(paste("TermsHeatmap.pdf",sep=""))
+plotEnrich(ego3, plot_type = "goheat", sim_method = "Rel")
+dev.off()
+```
+
+
+# Plot Theme
+
+```{r}
+library(patchwork)
+p1 <- plotEnrich(ego3, plot_type = "dot")
+p2 <- plotEnrich(ego3,
+  plot_type = "dot",
+  main_text_size = 10,
+  legend_text_size = 10
+)
+
+p3 <- plotEnrich(ego3,
+  plot_type = "dot",
+  border_thick = 3,
+  remove_grid = F
+)
+
+p4 <- plotEnrich(ego3,
+  plot_type = "dot",
+  remove_main_text = T,
+  remove_legend_text = T,
+  remove_legend = T
+)
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+
+
+pdf(paste("PlotTheme.pdf",sep=""))
+p1 + p2 + p3 + p4 + plot_annotation(tag_levels = "A")
+dev.off()
+```
+
+#  Advanced Plot
+
+```{r}
+# 1st step: prepare input IDs
+# Since the geneList is logFC decreasing ordered, we could take first 100 as up-regulated genes and vice versa.
+
+markers41 <- markers41[order(markers41$avg_diff, decreasing = TRUE), ]
+up_genes <- rownames(markers41[markers41$avg_diff > 0.65, ])
+down_genes <- rownames(markers41[markers41$avg_diff < -0.5, ])
+ 
+# 2nd step: prepare gene set
+hg_gs <- geneset::getGO(org = "human",ont = "bp")
+
+# 3rd step: ORA analysis separately
+up_go <- genORA(up_genes, geneset = hg_gs)
+down_go <- genORA(down_genes, geneset = hg_gs)
+```
+
+
+```{r fig.height=10}
+plotEnrichAdv(up_go, down_go,
+              plot_type = "one",
+              term_metric = "FoldEnrich",
+              stats_metric = "p.adjust",
+              xlim_left = 25, xlim_right = 15) +
+  theme(legend.position = c(0.2, 0.9))
+
+
+pdf(paste("Advanced.pdf",sep=""))
+plotEnrichAdv(up_go, down_go,
+              plot_type = "one",
+              term_metric = "FoldEnrich",
+              stats_metric = "p.adjust",
+              xlim_left = 25, xlim_right = 15) +
+  theme(legend.position = c(0.2, 0.9))
+dev.off()
+```
+
+```{r fig.height=10}
+plotEnrichAdv(up_go, down_go,
+              plot_type = "two",
+              term_metric = "FoldEnrich",
+              stats_metric = "pvalue",
+              legend_text_size = 5
+) +
+  theme(legend.position = "none")
+
+
+pdf(paste("Advanced2.pdf",sep=""))
+plotEnrichAdv(up_go, down_go,
+              plot_type = "two",
+              term_metric = "FoldEnrich",
+              stats_metric = "pvalue",
+              legend_text_size = 5
+) +
+  theme(legend.position = "none")
+dev.off()
+```
